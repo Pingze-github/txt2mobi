@@ -1,16 +1,11 @@
 # coding=utf8
 
 import chardet
-import re
 from utilities import codeTrans, ProjectConfig, no_html
+from exceptions import EncodingError
 
 
 config = ProjectConfig()
-
-allowed = [u',', u'.', u"!", u"?", u":", u"*", u"[", u"]", u";", u"-", u"_", u"。", u"，", u"?", u"：",
-           u"；", u"【", u"】", u" ", u""]
-
-english = u'qazxswedcvfrtgbnhyujmkiolpQAZXSWEDCVFRTGBNHYUJMKIOLP1234567890'
 
 def get_coding(file_content):
     result = chardet.detect(file_content)
@@ -19,34 +14,16 @@ def get_coding(file_content):
     return 'utf-8'
 
 
-def clear_line(line):
-    """
-    去掉特殊符号
-    :param line:
-    :type line:
-    :return:
-    :rtype:
-    """
-    wd = [w for w in line if (19968 <= ord(w) <= 40869) or (w in allowed) or (w in english)]
-    result_line = u"".join(wd)
-    return result_line
-
-
 def unicode_line(file_content):
     print "正在识别文件字符集..."
     coding = codeTrans(get_coding(file_content[:500]))
     print "文件字符集:", coding
     lines = file_content.split('\n')
-    result_lines = []
-    error_lines = 0
-    for idx, line in enumerate(lines):
-        try:
-            result_lines.append(clear_line(line.decode(coding)))
-        except Exception as e:
-            error_lines += 1
-    if error_lines:
-        print u"有%s行无法解析" % error_lines
-    return result_lines
+    try:
+        return [line.decode(coding) for line in lines]
+    except Exception, e:
+        print e
+        raise EncodingError(line)
 
 
 class Chapter(object):
@@ -70,7 +47,7 @@ class Chapter(object):
         for line in self.lines:
             rows.append("    <p>%s</p>" % line.encode('utf8'))
         rows.append("    <mbp:pagebreak />")
-        print "章节", self.title, "生成完毕"
+        print "章节", self.title.encode('utf-8'), "生成完毕"
         return "\n".join(rows)
 
     def as_ncx(self, idx):
@@ -84,7 +61,8 @@ class Chapter(object):
             </navLabel>
             <content src="book-%(book_idx)s.html#ch%(idx)s" />
         </navPoint>""" % dict(idx=self.idx, title=self.title.encode('utf8'), book_idx=idx)
-        print "章节索引", self.title, "生成完毕"
+        print "章节",self.title.encode('utf-8'),"生成完毕"
+        #print self.title
         return ncx
 
 
@@ -92,11 +70,10 @@ class Book(object):
     """
     书对象
     """
-    def __init__(self, file_path, title_filter):
+    def __init__(self, file_path):
         with open(file_path, 'r') as f:
             lines = unicode_line(f.read())
             f.close()
-        self.title_filter = title_filter
         self.chapters = []
         self.process_lines(lines)
         self.name = config.title
@@ -133,8 +110,8 @@ class Book(object):
         :return:
         :rtype:
         """
-        start = (idx - 1) * int(config.max_chapter)
-        end = idx * int(config.max_chapter)
+        start = (idx - 1) * config.max_chapter
+        end = idx * config.max_chapter
         return start, end
 
     def __is_chapter_title(self, line):
@@ -145,34 +122,13 @@ class Book(object):
         :return:
         :rtype:
         """
-        if self.title_filter:
-            strip_line = line.strip()
-            if 3 < len(strip_line) < 30:
-                if re.match(self.title_filter, strip_line):
-                    return True
-        else:
-            if line.strip().startswith(u'第'):
-                if 3 < len(line.strip()) < 30 and u"第" in line and u"章" in line:
-                    return True
-            if line.strip().startswith(u'第'):
-                if 3 < len(line.strip()) < 30 and u"第" in line and u"张" in line:
-                    return True
-            if line.strip().startswith(u'正文 第'):
-                if 3 < len(line.strip()) < 30 and u"第" in line and u"章" in line:
-                    return True
-            line = line.replace(u"．", u".").replace(u":", u".")
-            if line.split('.')[0].isdigit():
-                if 3 < len(line.strip()) < 20:
-                    return True
-            if len(line) < 20 and (line.strip()[:3].isdigit() or line.strip()[:4].isdigit()):
+        if line.strip().startswith(u'第'):
+            if 3 < len(line.strip()) < 30 and u"第" in line and u"章" in line:
                 return True
-            if len(line) < 40 and u"第" in line and u"卷" in line:
-                if line[line.index(u"第") + 1: line.index(u"卷")] in [u"一", u"二", u"三", u"四", u"五", u"六", u"七", u"八", u"九", u"十"]:
-                    return True
-            if line.strip().startswith(u'[第'):
-                if 3 < len(line.strip()) < 30 and u"第" in line and u"章" in line:
-                    return True
-
+        line = line.replace(u"．", u".").replace(u":", u".")
+        if line.split('.')[0].isdigit():
+            if 3 < len(line.strip()) < 20:
+                return True
         return False
 
     def process_lines(self, lines):
@@ -185,7 +141,6 @@ class Book(object):
         """
         idx = 1
         chapter = Chapter(u"前言", 0)
-        self.chapters.append(chapter)
         for line in lines:
             if self.__is_chapter_title(line):
                 chapter = Chapter(line.strip(), idx)
@@ -202,6 +157,11 @@ class Book(object):
         :rtype:
         """
         start, end = self.__start_end_of_index(idx)
+        if start == '':
+            start = 0
+        else:
+            start = int(start) 
+        end = int(end)
         menu_base = """
     <div id="toc">
         <h2>
@@ -225,6 +185,11 @@ class Book(object):
         """
         menu = self.gen_menu(idx)
         start, end = self.__start_end_of_index(idx)
+        if start == '':
+            start = 0
+        else:
+            start = int(start) 
+        end = int(end)
         book_name = config.title.encode('utf8')
         contents = "\n".join([chapter.as_html() for chapter in self. chapters[start: end]])
 
@@ -262,7 +227,14 @@ PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
         :return:
         :rtype:
         """
+        # TODO 修复start/end
         start, end = self.__start_end_of_index(idx)
+
+        start = 0
+        end = 1
+        print start
+        print end
+
         data = dict(
             book_name=config.title.encode('utf8'),
             menavPoints="\n".join([chapter.as_ncx(idx) for chapter in self.chapters[start: end]])
